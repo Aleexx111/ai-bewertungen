@@ -4,6 +4,32 @@ import pandas as pd
 import time
 import json
 
+# --- PASSWORT SCHUTZ ---
+def check_password():
+    """Gibt True zurück, wenn das Passwort korrekt ist."""
+    
+    # Wir schauen, ob das Passwort schon eingegeben wurde
+    if st.session_state.get('password_correct', False):
+        return True
+
+    # Eingabefeld anzeigen
+    st.header("🔒 Login erforderlich")
+    password_input = st.text_input("Bitte Passwort eingeben", type="password")
+    
+    if st.button("Anmelden"):
+        # HIER DEIN PASSWORT FESTLEGEN (z.B. "Marketing2024")
+        if password_input == "Marketing2024":
+            st.session_state['password_correct'] = True
+            st.rerun()  # App neu laden
+        else:
+            st.error("Falsches Passwort")
+            
+    return False
+
+# Wenn das Passwort NICHT stimmt, brechen wir hier ab!
+if not check_password():
+    st.stop()
+
 # --- KONFIGURATION ---
 st.set_page_config(page_title="AI Shop Texter Pro", page_icon="🛍️", layout="wide")
 
