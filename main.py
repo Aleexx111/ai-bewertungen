@@ -69,8 +69,7 @@ with st.sidebar:
 # --- FUNKTIONEN ---
 def get_gemini_response_json(product_data, style, blacklist):
     """
-    Diese Funktion zwingt die KI, JSON zurückzugeben, damit wir Spalten trennen können.
-    product_data ist ein String, der Specs, EAN und SKU enthält.
+    v4.2: Keine Überschrift am Start, keine Labels, reiner Fließtext mit Absätzen.
     """
     if not api_key:
         return None
@@ -82,7 +81,7 @@ def get_gemini_response_json(product_data, style, blacklist):
         if blacklist:
             blacklist_instruction = f"VERBOTENE WÖRTER (Strengstens beachten!): {blacklist}"
 
-        # Der komplexe Prompt für Struktur & Logik
+        # Prompt Update: Verbot von Titeln im Text & Labels
         prompt = f"""
         Du bist ein Senior Technical Copywriter für PC-Hardware.
         
@@ -93,45 +92,72 @@ def get_gemini_response_json(product_data, style, blacklist):
         {style}
         
         ANWEISUNGEN:
-        1. KATEGORIE-CHECK: Erkenne, was das Produkt ist.
-           - Ist es eine "Fokuskategorie" (GPU, CPU, Mainboard, Gehäuse, Monitor, teurer Laptop)? -> Schreibe ausführlich, technisch tiefgehend (ca. 300-400 Wörter). Erkläre Architektur und technische Vorteile.
-           - Ist es "Zubehör" (Kabel, Lüfter, Adapter, Wärmeleitpaste)? -> Fasse dich kurz und prägnant (ca. 80-100 Wörter).
+        1. STRUKTUR & LÄNGE:
+           - Schreibe ZWEI klare Absätze.
+           - Absatz 1: Einführung und Einordnung des Produkts.
+           - Absatz 2: Technische Details und Features als FLIESSTEXT (verbinde die Fakten logisch).
+           - Gesamtlänge: Fokuskategorie (GPU/CPU) ca. 300 Wörter, Zubehör ca. 80 Wörter.
         
-        2. INHALT:
-           - Vermeide "Teleshopping"-Sprache (z.B. "Unglaublich", "Atemberaubend"). Bleib bei harten Fakten.
-           - Schreibe die Highlights als Fließtext-Absatz, NICHT als Bulletpoints.
+        2. FORMATIERUNG (EXTREM WICHTIG):
+           - START: Beginne DIREKT mit dem ersten Satz. Wiederhole NICHT den Produktnamen als Überschrift am Anfang!
+           - KEINE Labels wie "Highlights:", "Beschreibung:", "Features:" oder ähnliches verwenden.
+           - KEINE Bulletpoints, keine Listen.
+           - Trenne die beiden Absätze durch das HTML-Tag <br><br>.
+           - Nutze KEINE <h1>, <h2> Tags.
            - {blacklist_instruction}
         
-        3. FORMAT (WICHTIG):
-        Antworte NUR mit einem gültigen JSON-Objekt. Keine Markdown-Formatierung (```json) drumherum.
-        Struktur:
+        3. OUTPUT:
+        Antworte NUR mit einem gültigen JSON-Objekt.
+        
         {{
             "meta_title": "Optimierter SEO Titel (max 60 Zeichen)",
             "meta_description": "Klickstarke Beschreibung inkl. USP (max 155 Zeichen)",
             "keywords": "5-8 relevante Keywords, kommagetrennt",
-            "product_description": "Der vollständige HTML/Markdown Produkttext mit Headline, Einleitung und technischem Fließtext."
+            "product_description": "[Hier Absatz 1]<br><br>[Hier Absatz 2 mit den technischen Details]"
         }}
         """
         
-        # Wir nutzen ein Modell, das gut JSON kann
         response = client.models.generate_content(
-            model='gemini-2.0-flash-exp', # Versuchen wir das intelligente Modell für JSON
+            model='gemini-2.0-flash-exp', 
             contents=prompt,
-            config={'response_mime_type': 'application/json'} # Erzwingt JSON Modus
+            config={'response_mime_type': 'application/json'}
         )
         
-        # JSON parsen
-        return json.loads(response.text)
+        # JSON laden
+        data = json.loads(response.text)
+        
+        # --- PYTHON NACHBEARBEITUNG (Sicherheitsnetz) ---
+        if "product_description" in data:
+            desc = data["product_description"]
+            
+            # 1. Überschriften Tags killen
+            for tag in ["<h1>", "</h1>", "<h2>", "</h2>", "<h3>", "</h3>", "<strong>", "</strong>", "<b>", "</b>"]:
+                desc = desc.replace(tag, "")
+            
+            # 2. Markdown killen
+            desc = desc.replace("## ", "").replace("# ", "").replace("**", "")
+            
+            # 3. Das Wort "Highlights:" entfernen, falls die KI es doch schreibt
+            desc = desc.replace("Highlights:", "").replace("Features:", "")
+            
+            # 4. Doppelte Zeilenumbrüche säubern (optional, aber sauberer)
+            desc = desc.replace("<br> <br>", "<br><br>")
+            
+            # 5. Falls der Text mit <br> anfängt (wegen Löschung), weg damit
+            while desc.startswith("<br>"):
+                desc = desc[4:]
+            
+            data["product_description"] = desc.strip()
+                
+        return data
         
     except Exception as e:
-        # Fallback, falls mal was schiefgeht
         return {
             "meta_title": "Fehler",
             "meta_description": "Fehler",
             "keywords": "Fehler",
             "product_description": f"Fehler bei Generierung: {str(e)}"
         }
-
 # --- UI HAUPTBEREICH ---
 st.title("🛍️ AI Content Factory v4.0 (Pro)")
 st.info("Neu: Automatische Erkennung von Fokuskategorien & Ausgabe in getrennten Spalten.")
