@@ -31,7 +31,7 @@ with st.sidebar:
         ]
     )
     
-    # BLACKLIST (Erweitert und als Standard)
+    # BLACKLIST
     default_blacklist = (
         "garantie, guaranty, guarantee, warrant, warrant, support, warranty, warranties, "
         "teflon, lycra, plexiglas, plexigalax, pu-leder, pu leder, puleder, textilleder, "
@@ -53,7 +53,7 @@ with st.sidebar:
 # --- FUNKTIONEN ---
 def get_gemini_response_json(product_data, style, blacklist):
     """
-    v5.2: Mit Anti-Gewährleistet-Filter (Hard Replacement).
+    v5.3: Anti-Gewährleistet & Anti-Garantieren Filter.
     """
     if not api_key:
         return None
@@ -82,7 +82,7 @@ def get_gemini_response_json(product_data, style, blacklist):
            - Gesamtlänge: Fokuskategorie (GPU/CPU) ca. 300 Wörter, Zubehör ca. 80 Wörter.
         
         2. SPRACHE & WORTSCHATZ (CRITICAL):
-           - Das Wort "gewährleistet" ist STRENG VERBOTEN. Nutze stattdessen: "sorgt für", "ermöglicht", "bietet", "stellt sicher".
+           - Die Wörter "gewährleistet" und "garantiert" (als Verb) sind STRENG VERBOTEN. Nutze stattdessen: "sorgt für", "ermöglicht", "bietet", "stellt sicher".
            - Vermeide Wortwiederholungen.
            - {blacklist_instruction}
         
@@ -111,7 +111,7 @@ def get_gemini_response_json(product_data, style, blacklist):
         
         data = json.loads(response.text)
         
-        # --- PYTHON CLEANER v5.2 (Die Scheibenwischer) ---
+        # --- PYTHON CLEANER v5.3 ---
         if "product_description" in data:
             desc = data["product_description"]
             
@@ -122,14 +122,20 @@ def get_gemini_response_json(product_data, style, blacklist):
             desc = desc.replace("## ", "").replace("# ", "").replace("**", "")
             desc = desc.replace("Highlights:", "").replace("Features:", "").replace("Beschreibung:", "")
             
-            # 2. DER ANTI-GEWÄHRLEISTET FILTER (Hard Replacement)
-            # Wir ersetzen das Wort stumpf durch Synonyme, falls die KI es doch benutzt hat.
-            # "sorgt für" passt grammatikalisch fast immer dort, wo "gewährleistet" steht.
+            # 2. ANTI-GEWÄHRLEISTET FILTER
             desc = desc.replace("gewährleistet", "sorgt für")
             desc = desc.replace("Gewährleistet", "Sorgt für")
             desc = desc.replace("gewährleisten", "sorgen für")
             
-            # 3. Leerzeilen Cleanup
+            # 3. ANTI-GARANTIERT FILTER (NEU)
+            # Wir ersetzen "garantiert" durch harmlose Synonyme
+            desc = desc.replace("garantiert", "stellt sicher")
+            desc = desc.replace("Garantiert", "Stellt sicher")
+            desc = desc.replace("garantieren", "stellen sicher")
+            # Falls "garantiert für" vorkommt, klingt "stellt sicher für" doof, daher fangen wir das ab:
+            desc = desc.replace("stellt sicher für", "ermöglicht") 
+            
+            # 4. Leerzeilen Cleanup
             while "\n\n\n" in desc:
                 desc = desc.replace("\n\n\n", "\n\n")
             
@@ -137,7 +143,9 @@ def get_gemini_response_json(product_data, style, blacklist):
             
             # Auch in der Meta-Description aufräumen
             if "meta_description" in data:
-                data["meta_description"] = data["meta_description"].replace("gewährleistet", "bietet").replace("Gewährleistet", "Bietet")
+                m_desc = data["meta_description"]
+                m_desc = m_desc.replace("gewährleistet", "bietet").replace("garantiert", "ermöglicht")
+                data["meta_description"] = m_desc
                 
         return data
         
@@ -150,8 +158,8 @@ def get_gemini_response_json(product_data, style, blacklist):
         }
 
 # --- UI HAUPTBEREICH ---
-st.title("🛍️ AI Content Factory v5.2")
-st.info("Update: 'Gewährleistet'-Filter aktiv (wird automatisch ersetzt).")
+st.title("🛍️ AI Content Factory v5.3")
+st.info("Update: Filter für 'gewährleistet' UND 'garantiert' aktiv.")
 
 tab1, tab2 = st.tabs(["📝 Einzel-Check", "🏭 CSV Massen-Verarbeitung"])
 
@@ -262,7 +270,7 @@ with tab2:
                     st.download_button(
                         label="📥 Fertige Excel (.xlsx) herunterladen",
                         data=buffer.getvalue(),
-                        file_name="fertige_produkte_v5_2.xlsx",
+                        file_name="fertige_produkte_v5_3.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     
