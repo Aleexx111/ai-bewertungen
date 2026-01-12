@@ -3,32 +3,7 @@ from google import genai
 import pandas as pd
 import time
 import json
-
-# --- PASSWORT SCHUTZ ---
-def check_password():
-    """Gibt True zurück, wenn das Passwort korrekt ist."""
-    
-    # Wir schauen, ob das Passwort schon eingegeben wurde
-    if st.session_state.get('password_correct', False):
-        return True
-
-    # Eingabefeld anzeigen
-    st.header("🔒 Login erforderlich")
-    password_input = st.text_input("Bitte Passwort eingeben", type="password")
-    
-    if st.button("Anmelden"):
-        # HIER DEIN PASSWORT FESTLEGEN (z.B. "Marketing2024")
-        if password_input == "Marketing2024":
-            st.session_state['password_correct'] = True
-            st.rerun()  # App neu laden
-        else:
-            st.error("Falsches Passwort")
-            
-    return False
-
-# Wenn das Passwort NICHT stimmt, brechen wir hier ab!
-if not check_password():
-    st.stop()
+import io  # NEU: Brauchen wir für den Excel-Export im Speicher
 
 # --- KONFIGURATION ---
 st.set_page_config(page_title="AI Shop Texter Pro", page_icon="🛍️", layout="wide")
@@ -37,7 +12,7 @@ st.set_page_config(page_title="AI Shop Texter Pro", page_icon="🛍️", layout=
 with st.sidebar:
     st.header("⚙️ Einstellungen")
     
-    # 1. API KEY (aus Secrets oder Input)
+    # 1. API KEY
     if "GOOGLE_API_KEY" in st.secrets:
         api_key = st.secrets["GOOGLE_API_KEY"]
         st.success("API Key intern geladen 🔒")
@@ -48,7 +23,7 @@ with st.sidebar:
     
     st.divider()
     
-    # 2. TONALITÄT (Angepasst)
+    # 2. TONALITÄT
     tonality = st.selectbox(
         "Zielgruppe / Tonalität",
         [
@@ -59,17 +34,28 @@ with st.sidebar:
     )
     
     # 3. BLACKLIST
-    st.subheader("🚫 Blacklist")
+    default_blacklist = (
+        "garantie, guaranty, guarantee, warrant, warrant, support, warranty, warranties, "
+        "teflon, lycra, plexiglas, plexigalax, pu-leder, pu leder, puleder, textilleder, "
+        "swarovski, swarowski, svarovski, svarowski, swarovsky, swarowsky, svarovsky, svarowsky, "
+        "farovski, farofski, varofski, farovsky, farofsky, varofsky, warofski, farowski, warofsky, farowsky, "
+        "fusionschuko, velcro, garantiert, garantieren, warantyservice, "
+        "Gewährleistung, gewährleistet, gewährleistest, gewährleisten, garantiere, garantierst, "
+        "Herstellergarantie, lebenslange Garantie, Herstellerunterstützung, Hersteller-Unterstützung, "
+        "Edelstahl rostfrei, Rostfreier Edelstahl"
+    )
+    
     blacklist_input = st.text_area(
-        "Verbotene Wörter:",
-        placeholder="billig, Schnäppchen, Highlights im Detail, Monster",
+        "Verbotene Wörter (automatisch geladen):",
+        value=default_blacklist,
+        height=300,
         help="Diese Wörter werden strikt vermieden."
     )
 
 # --- FUNKTIONEN ---
 def get_gemini_response_json(product_data, style, blacklist):
     """
-    v4.2: Keine Überschrift am Start, keine Labels, reiner Fließtext mit Absätzen.
+    v5.1: JSON Output, Clean Text, keine HTML Tags.
     """
     if not api_key:
         return None
@@ -81,7 +67,6 @@ def get_gemini_response_json(product_data, style, blacklist):
         if blacklist:
             blacklist_instruction = f"VERBOTENE WÖRTER (Strengstens beachten!): {blacklist}"
 
-        # Prompt Update: Verbot von Titeln im Text & Labels
         prompt = f"""
         Du bist ein Senior Technical Copywriter für PC-Hardware.
         
@@ -94,16 +79,16 @@ def get_gemini_response_json(product_data, style, blacklist):
         ANWEISUNGEN:
         1. STRUKTUR & LÄNGE:
            - Schreibe ZWEI klare Absätze.
-           - Absatz 1: Einführung und Einordnung des Produkts.
-           - Absatz 2: Technische Details und Features als FLIESSTEXT (verbinde die Fakten logisch).
+           - Absatz 1: Einführung.
+           - Absatz 2: Technische Details als FLIESSTEXT.
            - Gesamtlänge: Fokuskategorie (GPU/CPU) ca. 300 Wörter, Zubehör ca. 80 Wörter.
         
-        2. FORMATIERUNG (EXTREM WICHTIG):
-           - START: Beginne DIREKT mit dem ersten Satz. Wiederhole NICHT den Produktnamen als Überschrift am Anfang!
-           - KEINE Labels wie "Highlights:", "Beschreibung:", "Features:" oder ähnliches verwenden.
+        2. FORMATIERUNG (CLEAN TEXT):
+           - Beginne DIREKT mit dem Text (keine Überschrift am Anfang).
+           - KEINE Labels wie "Highlights:" oder "Beschreibung:".
            - KEINE Bulletpoints, keine Listen.
-           - Trenne die beiden Absätze durch das HTML-Tag <br><br>.
-           - Nutze KEINE <h1>, <h2> Tags.
+           - Trenne Absätze logisch.
+           - KEINE HTML Tags verwenden. Nutze normale Zeilenumbrüche.
            - {blacklist_instruction}
         
         3. OUTPUT:
@@ -113,7 +98,7 @@ def get_gemini_response_json(product_data, style, blacklist):
             "meta_title": "Optimierter SEO Titel (max 60 Zeichen)",
             "meta_description": "Klickstarke Beschreibung inkl. USP (max 155 Zeichen)",
             "keywords": "5-8 relevante Keywords, kommagetrennt",
-            "product_description": "[Hier Absatz 1]<br><br>[Hier Absatz 2 mit den technischen Details]"
+            "product_description": "[Absatz 1]\\n\\n[Absatz 2]"
         }}
         """
         
@@ -123,29 +108,21 @@ def get_gemini_response_json(product_data, style, blacklist):
             config={'response_mime_type': 'application/json'}
         )
         
-        # JSON laden
         data = json.loads(response.text)
         
-        # --- PYTHON NACHBEARBEITUNG (Sicherheitsnetz) ---
+        # --- PYTHON CLEANER ---
         if "product_description" in data:
             desc = data["product_description"]
-            
-            # 1. Überschriften Tags killen
-            for tag in ["<h1>", "</h1>", "<h2>", "</h2>", "<h3>", "</h3>", "<strong>", "</strong>", "<b>", "</b>"]:
+            # HTML Tags entfernen, <br> zu Newline
+            desc = desc.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+            for tag in ["<h1>", "</h1>", "<h2>", "</h2>", "<h3>", "</h3>", "<strong>", "</strong>", "<b>", "</b>", "<i>", "</i>"]:
                 desc = desc.replace(tag, "")
             
-            # 2. Markdown killen
             desc = desc.replace("## ", "").replace("# ", "").replace("**", "")
+            desc = desc.replace("Highlights:", "").replace("Features:", "").replace("Beschreibung:", "")
             
-            # 3. Das Wort "Highlights:" entfernen, falls die KI es doch schreibt
-            desc = desc.replace("Highlights:", "").replace("Features:", "")
-            
-            # 4. Doppelte Zeilenumbrüche säubern (optional, aber sauberer)
-            desc = desc.replace("<br> <br>", "<br><br>")
-            
-            # 5. Falls der Text mit <br> anfängt (wegen Löschung), weg damit
-            while desc.startswith("<br>"):
-                desc = desc[4:]
+            while "\n\n\n" in desc:
+                desc = desc.replace("\n\n\n", "\n\n")
             
             data["product_description"] = desc.strip()
                 
@@ -158,9 +135,10 @@ def get_gemini_response_json(product_data, style, blacklist):
             "keywords": "Fehler",
             "product_description": f"Fehler bei Generierung: {str(e)}"
         }
+
 # --- UI HAUPTBEREICH ---
-st.title("🛍️ AI Content Factory v4.0 (Pro)")
-st.info("Neu: Automatische Erkennung von Fokuskategorien & Ausgabe in getrennten Spalten.")
+st.title("🛍️ AI Content Factory v5.1 (Excel Export)")
+st.info("Neu: Ergebnisse jetzt direkt als .xlsx Datei herunterladen.")
 
 tab1, tab2 = st.tabs(["📝 Einzel-Check", "🏭 CSV Massen-Verarbeitung"])
 
@@ -173,37 +151,33 @@ with tab1:
         raw_sku = st.text_input("SKU / Herstellernummer (optional):")
         raw_ean = st.text_input("EAN (optional):")
         
-        # Input zusammenbauen
         combined_input = f"Specs: {raw_specs} | SKU: {raw_sku} | EAN: {raw_ean}"
-        
         generate_btn = st.button("Analysieren & Generieren 🚀", type="primary")
 
     with col2:
         st.subheader("Vorschau")
         if generate_btn and raw_specs:
-            with st.spinner('Analysiere Produkttyp und schreibe...'):
+            with st.spinner('KI schreibt...'):
                 data = get_gemini_response_json(combined_input, tonality, blacklist_input)
                 
                 if data:
                     st.caption("Meta Title:")
                     st.code(data.get("meta_title"), language="text")
-                    
                     st.caption("Meta Description:")
                     st.code(data.get("meta_description"), language="text")
-                    
-                    st.caption("Produkttext:")
-                    st.markdown(data.get("product_description"))
+                    st.caption("Produkttext (Clean):")
+                    st.text(data.get("product_description"))
                 else:
                     st.error("Fehler bei der API Anfrage.")
 
-# --- TAB 2: MASSENVERARBEITUNG (CSV) ---
+# --- TAB 2: MASSENVERARBEITUNG (EXCEL EXPORT) ---
 with tab2:
-    st.subheader("CSV Import")
+    st.subheader("CSV Import -> Excel Export")
     
     col_upload1, col_upload2 = st.columns(2)
     with col_upload1:
         csv_sep = st.selectbox(
-            "Trennzeichen",
+            "Trennzeichen der Input-Datei",
             ["; (Semikolon - Standard)", ", (Komma)"],
             key="csv_sep_tab2"
         )
@@ -211,34 +185,31 @@ with tab2:
         
     st.markdown("""
     **Anleitung:**
-    Die CSV sollte idealerweise folgende Spalten haben (Groß/Kleinschreibung egal):
-    * `specs` oder `name` (Pflicht)
-    * `sku` oder `herstellernummer` (Optional)
-    * `ean` (Optional)
+    1. Lade deine CSV mit den Rohdaten hoch.
+    2. Die KI verarbeitet alles.
+    3. Du erhältst eine **fertige Excel-Datei (.xlsx)** zurück.
     """)
     
     uploaded_file = st.file_uploader("CSV Datei hier ablegen", type=["csv"])
     
     if uploaded_file is not None:
         try:
-            df = pd.read_csv(uploaded_file, sep=selected_sep, dtype=str) # Alles als Text lesen
-            st.write("Erkannte Daten (erste 3 Zeilen):", df.head(3))
+            df = pd.read_csv(uploaded_file, sep=selected_sep, dtype=str)
+            st.write("Erkannte Daten:", df.head(3))
             
-            # Spalten suchen (flexibel)
             spec_col = next((c for c in df.columns if c.lower() in ['specs', 'name', 'titel', 'bezeichnung']), None)
             sku_col = next((c for c in df.columns if c.lower() in ['sku', 'herstellernummer', 'mpn', 'artnr']), None)
             ean_col = next((c for c in df.columns if c.lower() in ['ean', 'barcode']), None)
             
             if not spec_col:
-                st.error("❌ Keine Spalte für Produktnamen/Specs gefunden! Bitte nenne eine Spalte 'specs' oder 'name'.")
+                st.error("❌ Keine Spalte für Produktnamen/Specs gefunden!")
             else:
-                st.success(f"✅ Haupt-Spalte: '{spec_col}' | SKU: {'✅ '+sku_col if sku_col else '❌'} | EAN: {'✅ '+ean_col if ean_col else '❌'}")
+                st.success(f"✅ Haupt-Spalte: '{spec_col}'")
                 
                 if st.button("Start Massenverarbeitung"):
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     
-                    # Neue Listen für die Ergebnisse
                     res_titles = []
                     res_metas = []
                     res_keywords = []
@@ -247,19 +218,16 @@ with tab2:
                     total = len(df)
                     
                     for index, row in df.iterrows():
-                        status_text.text(f"Produkt {index + 1}/{total}: {str(row[spec_col])[:30]}...")
+                        status_text.text(f"Produkt {index + 1}/{total}...")
                         
-                        # Daten zusammenbauen
                         input_str = f"Produkt: {row[spec_col]}"
                         if sku_col and pd.notna(row[sku_col]):
                             input_str += f" | SKU: {row[sku_col]}"
                         if ean_col and pd.notna(row[ean_col]):
                             input_str += f" | EAN: {row[ean_col]}"
                             
-                        # KI Aufruf
                         json_res = get_gemini_response_json(input_str, tonality, blacklist_input)
                         
-                        # Ergebnisse in Listen speichern
                         if json_res:
                             res_titles.append(json_res.get("meta_title", ""))
                             res_metas.append(json_res.get("meta_description", ""))
@@ -272,23 +240,32 @@ with tab2:
                             res_bodies.append("")
                         
                         progress_bar.progress((index + 1) / total)
-                        time.sleep(1) # Schutz vor Rate Limits
+                        time.sleep(1)
                     
-                    # Alles in den DataFrame schreiben (neue Spalten)
+                    # Ergebnisse in DataFrame
                     df['SEO_Meta_Title'] = res_titles
                     df['SEO_Meta_Description'] = res_metas
                     df['SEO_Keywords'] = res_keywords
-                    df['Shop_Beschreibung_HTML'] = res_bodies
+                    df['Shop_Beschreibung_Clean'] = res_bodies
                     
-                    st.success("✅ Fertig! Alle Texte generiert.")
+                    st.success("✅ Fertig!")
                     
-                    # Export
-                    csv_export = df.to_csv(index=False, sep=';').encode('utf-8-sig')
+                    # --- NEU: EXCEL EXPORT ---
+                    # Wir schreiben die Daten in einen "virtuellen" Speicher (Buffer)
+                    buffer = io.BytesIO()
+                    
+                    # Wir nutzen die Engine 'openpyxl', um xlsx zu schreiben
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        df.to_excel(writer, index=False, sheet_name='Produktdaten')
+                        
+                    # Buffer bereitstellen
+                    download_data = buffer.getvalue()
+                    
                     st.download_button(
-                        label="📥 Fertige Excel-CSV herunterladen",
-                        data=csv_export,
-                        file_name="fertige_produkte_v4.csv",
-                        mime="text/csv",
+                        label="📥 Fertige Excel (.xlsx) herunterladen",
+                        data=download_data,
+                        file_name="fertige_produkte_v5.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     
         except Exception as e:
