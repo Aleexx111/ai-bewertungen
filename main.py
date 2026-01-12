@@ -3,7 +3,7 @@ from google import genai
 import pandas as pd
 import time
 import json
-import io  # NEU: Brauchen wir für den Excel-Export im Speicher
+import io
 
 # --- KONFIGURATION ---
 st.set_page_config(page_title="AI Shop Texter Pro", page_icon="🛍️", layout="wide")
@@ -12,7 +12,6 @@ st.set_page_config(page_title="AI Shop Texter Pro", page_icon="🛍️", layout=
 with st.sidebar:
     st.header("⚙️ Einstellungen")
     
-    # 1. API KEY
     if "GOOGLE_API_KEY" in st.secrets:
         api_key = st.secrets["GOOGLE_API_KEY"]
         st.success("API Key intern geladen 🔒")
@@ -23,7 +22,6 @@ with st.sidebar:
     
     st.divider()
     
-    # 2. TONALITÄT
     tonality = st.selectbox(
         "Zielgruppe / Tonalität",
         [
@@ -33,7 +31,7 @@ with st.sidebar:
         ]
     )
     
-    # 3. BLACKLIST
+    # BLACKLIST (Erweitert und als Standard)
     default_blacklist = (
         "garantie, guaranty, guarantee, warrant, warrant, support, warranty, warranties, "
         "teflon, lycra, plexiglas, plexigalax, pu-leder, pu leder, puleder, textilleder, "
@@ -42,7 +40,7 @@ with st.sidebar:
         "fusionschuko, velcro, garantiert, garantieren, warantyservice, "
         "Gewährleistung, gewährleistet, gewährleistest, gewährleisten, garantiere, garantierst, "
         "Herstellergarantie, lebenslange Garantie, Herstellerunterstützung, Hersteller-Unterstützung, "
-        "Edelstahl rostfrei, Rostfreier Edelstahl"
+        "Edelstahl rostfrei, Rostfreier Edelstahl, Highlights im Detail"
     )
     
     blacklist_input = st.text_area(
@@ -55,7 +53,7 @@ with st.sidebar:
 # --- FUNKTIONEN ---
 def get_gemini_response_json(product_data, style, blacklist):
     """
-    v5.1: JSON Output, Clean Text, keine HTML Tags.
+    v5.2: Mit Anti-Gewährleistet-Filter (Hard Replacement).
     """
     if not api_key:
         return None
@@ -83,15 +81,18 @@ def get_gemini_response_json(product_data, style, blacklist):
            - Absatz 2: Technische Details als FLIESSTEXT.
            - Gesamtlänge: Fokuskategorie (GPU/CPU) ca. 300 Wörter, Zubehör ca. 80 Wörter.
         
-        2. FORMATIERUNG (CLEAN TEXT):
-           - Beginne DIREKT mit dem Text (keine Überschrift am Anfang).
-           - KEINE Labels wie "Highlights:" oder "Beschreibung:".
-           - KEINE Bulletpoints, keine Listen.
-           - Trenne Absätze logisch.
-           - KEINE HTML Tags verwenden. Nutze normale Zeilenumbrüche.
+        2. SPRACHE & WORTSCHATZ (CRITICAL):
+           - Das Wort "gewährleistet" ist STRENG VERBOTEN. Nutze stattdessen: "sorgt für", "ermöglicht", "bietet", "stellt sicher".
+           - Vermeide Wortwiederholungen.
            - {blacklist_instruction}
         
-        3. OUTPUT:
+        3. FORMATIERUNG (CLEAN TEXT):
+           - Beginne DIREKT mit dem Text (keine Überschrift am Anfang).
+           - KEINE Labels wie "Highlights:", "Beschreibung:".
+           - KEINE Bulletpoints, keine Listen.
+           - KEINE HTML Tags verwenden.
+        
+        4. OUTPUT:
         Antworte NUR mit einem gültigen JSON-Objekt.
         
         {{
@@ -110,21 +111,33 @@ def get_gemini_response_json(product_data, style, blacklist):
         
         data = json.loads(response.text)
         
-        # --- PYTHON CLEANER ---
+        # --- PYTHON CLEANER v5.2 (Die Scheibenwischer) ---
         if "product_description" in data:
             desc = data["product_description"]
-            # HTML Tags entfernen, <br> zu Newline
+            
+            # 1. HTML & Markdown Cleanup
             desc = desc.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
             for tag in ["<h1>", "</h1>", "<h2>", "</h2>", "<h3>", "</h3>", "<strong>", "</strong>", "<b>", "</b>", "<i>", "</i>"]:
                 desc = desc.replace(tag, "")
-            
             desc = desc.replace("## ", "").replace("# ", "").replace("**", "")
             desc = desc.replace("Highlights:", "").replace("Features:", "").replace("Beschreibung:", "")
             
+            # 2. DER ANTI-GEWÄHRLEISTET FILTER (Hard Replacement)
+            # Wir ersetzen das Wort stumpf durch Synonyme, falls die KI es doch benutzt hat.
+            # "sorgt für" passt grammatikalisch fast immer dort, wo "gewährleistet" steht.
+            desc = desc.replace("gewährleistet", "sorgt für")
+            desc = desc.replace("Gewährleistet", "Sorgt für")
+            desc = desc.replace("gewährleisten", "sorgen für")
+            
+            # 3. Leerzeilen Cleanup
             while "\n\n\n" in desc:
                 desc = desc.replace("\n\n\n", "\n\n")
             
             data["product_description"] = desc.strip()
+            
+            # Auch in der Meta-Description aufräumen
+            if "meta_description" in data:
+                data["meta_description"] = data["meta_description"].replace("gewährleistet", "bietet").replace("Gewährleistet", "Bietet")
                 
         return data
         
@@ -137,8 +150,8 @@ def get_gemini_response_json(product_data, style, blacklist):
         }
 
 # --- UI HAUPTBEREICH ---
-st.title("🛍️ AI Content Factory v5.1 (Excel Export)")
-st.info("Neu: Ergebnisse jetzt direkt als .xlsx Datei herunterladen.")
+st.title("🛍️ AI Content Factory v5.2")
+st.info("Update: 'Gewährleistet'-Filter aktiv (wird automatisch ersetzt).")
 
 tab1, tab2 = st.tabs(["📝 Einzel-Check", "🏭 CSV Massen-Verarbeitung"])
 
@@ -163,14 +176,12 @@ with tab1:
                 if data:
                     st.caption("Meta Title:")
                     st.code(data.get("meta_title"), language="text")
-                    st.caption("Meta Description:")
-                    st.code(data.get("meta_description"), language="text")
                     st.caption("Produkttext (Clean):")
                     st.text(data.get("product_description"))
                 else:
                     st.error("Fehler bei der API Anfrage.")
 
-# --- TAB 2: MASSENVERARBEITUNG (EXCEL EXPORT) ---
+# --- TAB 2: EXCEL EXPORT ---
 with tab2:
     st.subheader("CSV Import -> Excel Export")
     
@@ -183,12 +194,7 @@ with tab2:
         )
         selected_sep = csv_sep[0]
         
-    st.markdown("""
-    **Anleitung:**
-    1. Lade deine CSV mit den Rohdaten hoch.
-    2. Die KI verarbeitet alles.
-    3. Du erhältst eine **fertige Excel-Datei (.xlsx)** zurück.
-    """)
+    st.markdown("Lade deine CSV hoch. Du bekommst eine saubere Excel-Datei zurück.")
     
     uploaded_file = st.file_uploader("CSV Datei hier ablegen", type=["csv"])
     
@@ -242,7 +248,6 @@ with tab2:
                         progress_bar.progress((index + 1) / total)
                         time.sleep(1)
                     
-                    # Ergebnisse in DataFrame
                     df['SEO_Meta_Title'] = res_titles
                     df['SEO_Meta_Description'] = res_metas
                     df['SEO_Keywords'] = res_keywords
@@ -250,21 +255,14 @@ with tab2:
                     
                     st.success("✅ Fertig!")
                     
-                    # --- NEU: EXCEL EXPORT ---
-                    # Wir schreiben die Daten in einen "virtuellen" Speicher (Buffer)
                     buffer = io.BytesIO()
-                    
-                    # Wir nutzen die Engine 'openpyxl', um xlsx zu schreiben
                     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                         df.to_excel(writer, index=False, sheet_name='Produktdaten')
                         
-                    # Buffer bereitstellen
-                    download_data = buffer.getvalue()
-                    
                     st.download_button(
                         label="📥 Fertige Excel (.xlsx) herunterladen",
-                        data=download_data,
-                        file_name="fertige_produkte_v5.xlsx",
+                        data=buffer.getvalue(),
+                        file_name="fertige_produkte_v5_2.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     
