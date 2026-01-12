@@ -4,6 +4,7 @@ import pandas as pd
 import time
 import json
 import io
+import re  # NEU: Für die gründliche Text-Reinigung
 
 # --- KONFIGURATION ---
 st.set_page_config(page_title="AI Shop Texter Pro", page_icon="🛍️", layout="wide")
@@ -31,7 +32,6 @@ with st.sidebar:
         ]
     )
     
-    # BLACKLIST
     default_blacklist = (
         "garantie, guaranty, guarantee, warrant, warrant, support, warranty, warranties, "
         "teflon, lycra, plexiglas, plexigalax, pu-leder, pu leder, puleder, textilleder, "
@@ -51,9 +51,22 @@ with st.sidebar:
     )
 
 # --- FUNKTIONEN ---
+def clean_json_string(text):
+    """
+    Hilfsfunktion: Entfernt Markdown und unsichtbare Steuerzeichen, die JSON kaputt machen.
+    """
+    # 1. Markdown Code-Blöcke entfernen (```json ... ```)
+    text = text.replace("```json", "").replace("```", "")
+    
+    # 2. Unsichtbare Steuerzeichen entfernen (außer normalen Zeilenumbrüchen)
+    # Das hier löscht Tabulatoren und andere seltsame ASCII-Zeichen, die den Fehler 909 auslösen
+    text = re.sub(r'[\x00-\x09\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
+    
+    return text.strip()
+
 def get_gemini_response_json(product_data, style, blacklist):
     """
-    v5.3: Anti-Gewährleistet & Anti-Garantieren Filter.
+    v5.4: Robustes JSON-Parsing mit Fehler-Korrektur (Strict=False).
     """
     if not api_key:
         return None
@@ -82,15 +95,13 @@ def get_gemini_response_json(product_data, style, blacklist):
            - Gesamtlänge: Fokuskategorie (GPU/CPU) ca. 300 Wörter, Zubehör ca. 80 Wörter.
         
         2. SPRACHE & WORTSCHATZ (CRITICAL):
-           - Die Wörter "gewährleistet" und "garantiert" (als Verb) sind STRENG VERBOTEN. Nutze stattdessen: "sorgt für", "ermöglicht", "bietet", "stellt sicher".
-           - Vermeide Wortwiederholungen.
+           - "gewährleistet" und "garantiert" sind VERBOTEN -> Nutze "sorgt für", "stellt sicher".
            - {blacklist_instruction}
         
         3. FORMATIERUNG (CLEAN TEXT):
-           - Beginne DIREKT mit dem Text (keine Überschrift am Anfang).
-           - KEINE Labels wie "Highlights:", "Beschreibung:".
-           - KEINE Bulletpoints, keine Listen.
-           - KEINE HTML Tags verwenden.
+           - Beginne DIREKT mit dem Text.
+           - KEINE Labels, KEINE Listen, KEINE HTML Tags.
+           - WICHTIG: Erzeuge valides JSON. Keine Steuerzeichen (Tabs) in den Strings.
         
         4. OUTPUT:
         Antworte NUR mit einem gültigen JSON-Objekt.
@@ -109,39 +120,48 @@ def get_gemini_response_json(product_data, style, blacklist):
             config={'response_mime_type': 'application/json'}
         )
         
-        data = json.loads(response.text)
+        raw_text = response.text
         
-        # --- PYTHON CLEANER v5.3 ---
+        # --- SICHERES PARSEN ---
+        try:
+            # Versuch 1: Direktes Parsen (mit strict=False, das erlaubt oft Steuerzeichen)
+            data = json.loads(clean_json_string(raw_text), strict=False)
+        except json.JSONDecodeError:
+            # Versuch 2: Wenn das schiefgeht, versuchen wir, harte Zeilenumbrüche zu reparieren
+            # Manchmal macht die KI echte Zeilenumbrüche statt \n in den String
+            cleaned_text = clean_json_string(raw_text).replace('\n', '\\n')
+            try:
+                data = json.loads(cleaned_text, strict=False)
+            except:
+                # Fallback: Wenn alles scheitert, geben wir den Roh-Text zurück, damit nichts verloren geht
+                return {
+                    "meta_title": "JSON Fehler",
+                    "meta_description": "Bitte Artikel erneut prüfen",
+                    "keywords": "",
+                    "product_description": f"Fehler beim Lesen der KI-Antwort. Rohdaten: {raw_text[:500]}..."
+                }
+
+        # --- PYTHON CLEANER v5.3 Logik ---
         if "product_description" in data:
             desc = data["product_description"]
             
-            # 1. HTML & Markdown Cleanup
+            # HTML Cleanup
             desc = desc.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
             for tag in ["<h1>", "</h1>", "<h2>", "</h2>", "<h3>", "</h3>", "<strong>", "</strong>", "<b>", "</b>", "<i>", "</i>"]:
                 desc = desc.replace(tag, "")
             desc = desc.replace("## ", "").replace("# ", "").replace("**", "")
             desc = desc.replace("Highlights:", "").replace("Features:", "").replace("Beschreibung:", "")
             
-            # 2. ANTI-GEWÄHRLEISTET FILTER
-            desc = desc.replace("gewährleistet", "sorgt für")
-            desc = desc.replace("Gewährleistet", "Sorgt für")
-            desc = desc.replace("gewährleisten", "sorgen für")
+            # Anti-Gewährleistet & Garantieren
+            desc = desc.replace("gewährleistet", "sorgt für").replace("Gewährleistet", "Sorgt für").replace("gewährleisten", "sorgen für")
+            desc = desc.replace("garantiert", "stellt sicher").replace("Garantiert", "Stellt sicher").replace("garantieren", "stellen sicher")
+            desc = desc.replace("stellt sicher für", "ermöglicht")
             
-            # 3. ANTI-GARANTIERT FILTER (NEU)
-            # Wir ersetzen "garantiert" durch harmlose Synonyme
-            desc = desc.replace("garantiert", "stellt sicher")
-            desc = desc.replace("Garantiert", "Stellt sicher")
-            desc = desc.replace("garantieren", "stellen sicher")
-            # Falls "garantiert für" vorkommt, klingt "stellt sicher für" doof, daher fangen wir das ab:
-            desc = desc.replace("stellt sicher für", "ermöglicht") 
-            
-            # 4. Leerzeilen Cleanup
             while "\n\n\n" in desc:
                 desc = desc.replace("\n\n\n", "\n\n")
             
             data["product_description"] = desc.strip()
             
-            # Auch in der Meta-Description aufräumen
             if "meta_description" in data:
                 m_desc = data["meta_description"]
                 m_desc = m_desc.replace("gewährleistet", "bietet").replace("garantiert", "ermöglicht")
@@ -158,8 +178,8 @@ def get_gemini_response_json(product_data, style, blacklist):
         }
 
 # --- UI HAUPTBEREICH ---
-st.title("🛍️ AI Content Factory v5.3")
-st.info("Update: Filter für 'gewährleistet' UND 'garantiert' aktiv.")
+st.title("🛍️ AI Content Factory v5.4")
+st.info("Update: Sicherheits-Fix für 'Invalid Control Character' Fehler.")
 
 tab1, tab2 = st.tabs(["📝 Einzel-Check", "🏭 CSV Massen-Verarbeitung"])
 
@@ -270,7 +290,7 @@ with tab2:
                     st.download_button(
                         label="📥 Fertige Excel (.xlsx) herunterladen",
                         data=buffer.getvalue(),
-                        file_name="fertige_produkte_v5_3.xlsx",
+                        file_name="fertige_produkte_v5_4.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     
