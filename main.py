@@ -17,7 +17,7 @@ def check_password():
     st.header("🔒 Login erforderlich")
     password_input = st.text_input("Bitte Passwort eingeben", type="password")
     if st.button("Anmelden"):
-        if password_input == "Marketing2026":
+        if password_input == "Marketing2024":
             st.session_state['password_correct'] = True
             st.rerun()
         else:
@@ -44,6 +44,7 @@ with st.sidebar:
         "Standard E-Commerce - Ausgewogen"
     ])
     
+    # BLACKLIST (Output Filter)
     default_blacklist = (
         "garantie, guaranty, guarantee, warrant, warrant, support, warranty, warranties, "
         "teflon, lycra, plexiglas, plexigalax, pu-leder, pu leder, puleder, textilleder, "
@@ -54,24 +55,68 @@ with st.sidebar:
         "Herstellergarantie, lebenslange Garantie, Herstellerunterstützung, Hersteller-Unterstützung, "
         "Edelstahl rostfrei, Rostfreier Edelstahl, Highlights im Detail"
     )
-    blacklist_input = st.text_area("Verbotene Wörter:", value=default_blacklist, height=200)
+    blacklist_input = st.text_area("Verbotene Wörter (Output):", value=default_blacklist, height=200)
 
 # --- FUNKTIONEN ---
+
+def clean_input_pre_processing(text):
+    """
+    NEU: Reinigt den Input-Namen VOR der KI.
+    Entfernt kryptische Kürzel am Anfang (z.B. "SER ", "RP HDSA "), 
+    behält aber bekannte Marken.
+    """
+    if not isinstance(text, str): return str(text)
+    
+    # Liste von Marken, die NICHT gelöscht werden dürfen, auch wenn sie großgeschrieben sind
+    BRAND_WHITELIST = [
+        "ASUS", "AMD", "INTEL", "MSI", "HP", "DELL", "LENOVO", "ACER", "APPLE", 
+        "SAMSUNG", "LG", "SONY", "EVGA", "PNY", "PALIT", "ZOTAC", "XFX", "NZXT",
+        "CORSAIR", "RAZER", "LOGITECH", "ROCCAT", "STEELSERIES", "BENQ", "AOC",
+        "BE QUIET", "NOCTUA", "SEASONIC", "CRUCIAL", "KINGSTON", "WESTERN DIGITAL", "WD", "SEAGATE",
+        "SANDISK", "ADATA", "PATRIOT", "G.SKILL", "TEAMGROUP", "HYPERX", "SAPPHIRE",
+        "POWERCOLOR", "INNO3D", "GAINWARD", "KFA2", "GIGABYTE", "ASROCK", "BIOSTAR", "TERRA"
+    ]
+    
+    words = text.split()
+    if not words: return text
+    
+    # Wir prüfen das erste Wort (und optional das zweite)
+    # Logik: Ist es komplett Großgeschrieben? Hat es 2-6 Buchstaben? Ist es NICHT in der Whitelist? -> Weg damit!
+    
+    # Schleife, falls mehrere Kürzel nacheinander kommen (z.B. "RP HDSA Name")
+    while len(words) > 0:
+        first_word = words[0]
+        # Bereinigen von Sonderzeichen für den Check (z.B. "SER:" -> "SER")
+        clean_word = re.sub(r'[^A-Z0-9]', '', first_word)
+        
+        # Check: Ist es ein Code? (Alles Großbuchstaben, 2-7 Zeichen lang)
+        is_code = first_word.isupper() and 2 <= len(clean_word) <= 7
+        
+        # Check: Ist es eine Marke?
+        is_brand = clean_word in BRAND_WHITELIST
+        
+        if is_code and not is_brand:
+            # Es ist ein Code (z.B. "SER") und keine Marke -> Löschen
+            words.pop(0) 
+        else:
+            # Es ist kein Code oder eine Marke -> Wir sind fertig mit Löschen
+            break
+            
+    return " ".join(words)
+
 def clean_json_string(text):
     text = text.replace("```json", "").replace("```", "")
     text = re.sub(r'[\x00-\x09\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
     return text.strip()
 
-def clean_product_text(text):
+def clean_product_text_output(text):
+    """Reinigung des FERTIGEN Textes (Output)"""
     if not text: return ""
     text = text.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
     for tag in ["<h1>", "</h1>", "<h2>", "</h2>", "<h3>", "</h3>", "<strong>", "</strong>", "<b>", "</b>", "<i>", "</i>"]:
         text = text.replace(tag, "")
     text = text.replace("## ", "").replace("# ", "").replace("**", "")
     text = text.replace("Highlights:", "").replace("Features:", "").replace("Beschreibung:", "")
-    
-    # Abkürzungen am Anfang entfernen
-    text = re.sub(r'^[A-Z]{2,6}(\s[A-Z]{2,6})?\s', '', text)
     
     # Wort-Filter
     text = text.replace("gewährleistet", "sorgt für").replace("Gewährleistet", "Sorgt für").replace("gewährleisten", "sorgen für")
@@ -82,7 +127,6 @@ def clean_product_text(text):
     return text.strip()
 
 def get_gemini_response_json(product_data, style, blacklist):
-    """Kern-Funktion für einen einzelnen Aufruf."""
     client = genai.Client(api_key=api_key)
     blacklist_instruction = f"VERBOTENE WÖRTER: {blacklist}" if blacklist else ""
 
@@ -91,7 +135,7 @@ def get_gemini_response_json(product_data, style, blacklist):
     INPUT: {product_data}
     STIL: {style}
     ANWEISUNGEN:
-    1. ANALYSE: Ignoriere kryptische Abkürzungen am Anfang (z.B. "RP HDSA").
+    1. ANALYSE: Ignoriere kryptische Abkürzungen am Anfang, falls noch vorhanden.
     2. STRUKTUR: 2 Absätze (Intro + Tech-Details als Fließtext). Länge: GPU/CPU ~300 Wörter, Zubehör ~80.
     3. NO-GOS: Keine "gewährleistet"/"garantiert". {blacklist_instruction}
     4. FORMAT: Kein HTML, keine Labels, Valides JSON.
@@ -104,52 +148,45 @@ def get_gemini_response_json(product_data, style, blacklist):
         config={'response_mime_type': 'application/json'}
     )
     
-    # Parsen
     try:
         data = json.loads(clean_json_string(response.text), strict=False)
     except:
         cleaned_text = clean_json_string(response.text).replace('\n', '\\n')
         data = json.loads(cleaned_text, strict=False)
 
-    # Cleaning
     if "product_description" in data:
-        data["product_description"] = clean_product_text(data["product_description"])
+        data["product_description"] = clean_product_text_output(data["product_description"])
     if "meta_description" in data:
         data["meta_description"] = data["meta_description"].replace("gewährleistet", "bietet").replace("garantiert", "ermöglicht")
             
     return data
 
 def generate_with_retry(input_str, tonality, blacklist, status_placeholder):
-    """
-    NEU: Der Airbag. Versucht es bis zu 3x mit Wartezeit.
-    """
     max_retries = 3
-    retry_delay = 60 # Sekunden warten bei Fehler
+    retry_delay = 60 
     
     for attempt in range(max_retries):
         try:
             return get_gemini_response_json(input_str, tonality, blacklist)
         except Exception as e:
             error_msg = str(e)
-            # Prüfen ob es ein Rate Limit Fehler ist (429 oder Resource exhausted)
             if "429" in error_msg or "429" in str(e) or "Resource exhausted" in error_msg:
                 if attempt < max_retries - 1:
-                    status_placeholder.warning(f"⏳ Rate Limit erreicht (Google macht Pause). Warte {retry_delay} Sekunden und versuche es erneut...")
+                    status_placeholder.warning(f"⏳ Rate Limit (429). Warte {retry_delay} Sek. und versuche es erneut...")
                     time.sleep(retry_delay)
-                    status_placeholder.info("🔄 Versuche es erneut...")
-                    continue # Nächster Schleifendurchlauf
+                    status_placeholder.info("🔄 Neuer Versuch...")
+                    continue 
             
-            # Wenn es ein anderer Fehler ist oder Retries aufgebraucht sind:
             return {
                 "meta_title": "Fehler",
                 "meta_description": "Fehler",
                 "keywords": "Fehler",
-                "product_description": f"Fehler nach {attempt+1} Versuchen: {error_msg}"
+                "product_description": f"Fehler: {error_msg}"
             }
 
 # --- UI HAUPTBEREICH ---
-st.title("🛍️ AI Content Factory v6.0 (Rate Limit Guard)")
-st.info("Neu: Automatische Pausen & Retry-System bei Überlastung.")
+st.title("🛍️ AI Content Factory v6.1 (Clean Input)")
+st.info("Neu: Input-Cleaner entfernt 'SER', 'RP HDSA' etc. VOR der Generierung.")
 
 tab1, tab2 = st.tabs(["📝 Einzel-Check", "🏭 CSV Massen-Verarbeitung"])
 
@@ -158,26 +195,35 @@ with tab1:
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Input")
-        raw_specs = st.text_area("Technische Daten / Name:", height=150)
+        raw_specs = st.text_area("Technische Daten / Name:", height=150, placeholder="SER Terra MINISERVER G6...")
         raw_sku = st.text_input("SKU:")
         raw_ean = st.text_input("EAN:")
-        combined_input = f"Specs: {raw_specs} | SKU: {raw_sku} | EAN: {raw_ean}"
+        
+        # Test-Anzeige für den User
+        if raw_specs:
+            cleaned_preview = clean_input_pre_processing(raw_specs)
+            if cleaned_preview != raw_specs:
+                st.caption(f"✨ Bereinigter Input für KI: **{cleaned_preview}**")
+        
         generate_btn = st.button("Start 🚀", type="primary")
 
     with col2:
         st.subheader("Vorschau")
         if generate_btn and raw_specs:
+            # Input reinigen
+            clean_specs = clean_input_pre_processing(raw_specs)
+            combined_input = f"Specs: {clean_specs} | SKU: {raw_sku} | EAN: {raw_ean}"
+            
             with st.spinner('KI schreibt...'):
-                # Hier nutzen wir keinen Retry, da Einzelabfrage selten ins Limit läuft
                 data = get_gemini_response_json(combined_input, tonality, blacklist_input)
                 if data:
                     st.code(data.get("meta_title"), language="text")
                     st.text(data.get("product_description"))
                 else: st.error("Fehler.")
 
-# --- TAB 2: MASSENVERARBEITUNG ---
+# --- TAB 2 ---
 with tab2:
-    st.subheader("Excel Export mit Smart-Bremse")
+    st.subheader("Excel Export mit Smart-Bremse & Input-Wäsche")
     
     col_upload1, col_upload2 = st.columns(2)
     with col_upload1:
@@ -204,14 +250,16 @@ with tab2:
                     total = len(df)
                     
                     for index, row in df.iterrows():
-                        status_text.text(f"Bearbeite Produkt {index + 1}/{total}: {str(row[spec_col])[:30]}...")
+                        # 1. INPUT REINIGUNG (Das ist neu!)
+                        original_name = str(row[spec_col])
+                        clean_name = clean_input_pre_processing(original_name)
                         
-                        input_str = f"Produkt: {row[spec_col]}"
+                        status_text.text(f"Produkt {index + 1}/{total}: {clean_name[:40]}...")
+                        
+                        input_str = f"Produkt: {clean_name}"
                         if sku_col and pd.notna(row[sku_col]): input_str += f" | SKU: {row[sku_col]}"
                         if ean_col and pd.notna(row[ean_col]): input_str += f" | EAN: {row[ean_col]}"
                         
-                        # HIER IST DIE NEUE MAGIE:
-                        # Wir nutzen die Retry-Funktion UND geben den Status-Text mit, damit er Warnungen anzeigen kann
                         json_res = generate_with_retry(input_str, tonality, blacklist_input, status_text)
                         
                         results["title"].append(json_res.get("meta_title", ""))
@@ -221,15 +269,11 @@ with tab2:
                         
                         progress_bar.progress((index + 1) / total)
                         
-                        # SMART THROTTLING (Die Bremse)
-                        # Wir warten IMMER 5 Sekunden (um sicher zu sein)
-                        # Das garantiert max 12 requests pro Minute
+                        # Rate Limit Pausen
                         time.sleep(5)
-                        
-                        # ZUSATZ-BREMSE: Alle 5 Artikel eine kleine Extra-Pause
                         if (index + 1) % 5 == 0 and (index + 1) < total:
-                            status_text.info(f"☕ Mache kurze Sicherheits-Pause nach 5 Artikeln (um Rate Limit zu vermeiden)...")
-                            time.sleep(10) # Weitere 10 Sekunden Pause
+                            status_text.info(f"☕ Sicherheits-Pause nach 5 Artikeln...")
+                            time.sleep(10)
 
                     df['SEO_Meta_Title'] = results["title"]
                     df['SEO_Meta_Description'] = results["meta"]
@@ -245,7 +289,7 @@ with tab2:
                     st.download_button(
                         label="📥 Excel herunterladen (.xlsx)",
                         data=buffer.getvalue(),
-                        file_name="fertige_produkte_v6.xlsx",
+                        file_name="fertige_produkte_v6_1.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
             else:
